@@ -1,3 +1,4 @@
+from langchain_core.tools import tool
 import re
 
 def analizar_texto_pln(texto: str) -> str:
@@ -32,3 +33,12 @@ def analizar_texto_pln(texto: str) -> str:
         return "No se encontraron entidades relevantes."
         
     return " | ".join(hallazgos)
+
+@tool
+def herramienta_analisis_pln(texto_usuario: str) -> str:
+    """
+    Útil para analizar el texto del usuario. 
+    Úsala cuando el usuario escriba correos, exprese quejas o pregunte por precios.
+    """
+    print(f"\n🚨 [DEBUG] ¡La herramienta PLN ha sido llamada con el texto: {texto_usuario}!\n")
+    return analizar_texto_pln(texto_usuario)

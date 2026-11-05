@@ -5,22 +5,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-# Cargar variables de entorno (tu API_KEY_GROQ)
+# Importamos tu herramienta creada en logic.py
+from logic import herramienta_analisis_pln
+
+# Cargar variables de entorno
 load_dotenv()
-
-
 
 # ==========================================
 # 1. CREACIÓN DEL MICROSERVICIO (FastAPI)
 # ==========================================
-app = FastAPI(title="Agente Conversacional ")
+app = FastAPI(title="Agente Conversacional")
 
-# Agregar el middleware de CORS aquí (después de crear app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,24 +33,27 @@ app.add_middleware(
 # ==========================================
 llm = ChatGroq(
     groq_api_key=os.environ.get("API_KEY_GROQ"),
-    model_name="meta-llama/llama-prompt-guard-2-86m", # aqui se puede poner el que sea 
-    max_tokens=500 # para que no de errores a la hora de preguntar 
+    model_name="openai/gpt-oss-20b",  # <--- MODELO ACTUALIZADO
+    max_tokens=500
 )
 
+# SCRUM-38: Ajustamos las instrucciones del sistema
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "Eres un asistente conversacional útil, amable y conciso."),
+    ("system", "Eres un asistente conversacional útil y empático. Tienes una herramienta para analizar el texto (PLN). Úsala siempre que el usuario proporcione un correo, exprese una queja o pregunte por precios."),
     MessagesPlaceholder(variable_name="historial"),
     ("human", "{entrada}")
 ])
 
-# El agente conversacional mínimo
-cadena = prompt | llm
+# Vinculamos la herramienta al LLM
+llm_con_herramientas = llm.bind_tools([herramienta_analisis_pln])
+
+cadena = prompt | llm_con_herramientas
 
 # ==========================================
 # 3. MODELOS DE DATOS PARA LA API (Pydantic)
 # ==========================================
 class MensajeHistorial(BaseModel):
-    rol: str  # "usuario" o "asistente"
+    rol: str
     contenido: str
 
 class PeticionChat(BaseModel):
@@ -66,11 +68,10 @@ def ruta_raiz():
     return {"estado": "Servidor activo", "mensaje": "Bienvenido al Agente de IA"}
 
 # ==========================================
-# 4. ENDPOINT /chat (Requerido por el PDF)
+# 4. ENDPOINT /chat
 # ==========================================
 @app.post("/chat", response_model=RespuestaChat)
 async def endpoint_chat(peticion: PeticionChat):
-    # a) Convertir el historial que llega por internet al formato de LangChain
     memoria_langchain = []
     for msg in peticion.historial:
         if msg.rol == "usuario":
@@ -78,11 +79,25 @@ async def endpoint_chat(peticion: PeticionChat):
         elif msg.rol == "asistente":
             memoria_langchain.append(AIMessage(content=msg.contenido))
 
-    # b) Pasar los datos al agente de LangChain
     resultado = await cadena.ainvoke({
         "historial": memoria_langchain,
         "entrada": peticion.mensaje
     })
 
-    # c) Devolver la respuesta en formato JSON
+    if resultado.tool_calls:
+        for tool_call in resultado.tool_calls:
+            if tool_call["name"] == "herramienta_analisis_pln":
+                texto_a_analizar = tool_call["args"]["texto_usuario"]
+                
+                resultado_pln = herramienta_analisis_pln.invoke(texto_a_analizar)
+                
+                mensaje_herramienta = HumanMessage(
+                    content=f"El análisis PLN del mensaje es: {resultado_pln}. Responde al usuario de forma natural basándote en esto."
+                )
+                
+                respuesta_final = await llm.ainvoke(
+                    memoria_langchain + [HumanMessage(content=peticion.mensaje), mensaje_herramienta]
+                )
+                return RespuestaChat(respuesta=respuesta_final.content)
+
     return RespuestaChat(respuesta=resultado.content)
